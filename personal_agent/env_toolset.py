@@ -26,7 +26,33 @@ def session_id(context: ReadonlyContext) -> str:
     return context.session.id
 
 
+def _canon(obj):
+    """Coerce whole-number floats to ints so tool-call args hash-match the
+    golden DB state (the env seeds record ids from exact JSON args, and
+    1500.0 != 1500). Discoverable calls nest their real args in an 'arguments'
+    JSON string, so recurse into that too."""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, float):
+        return int(obj) if obj.is_integer() else obj
+    if isinstance(obj, list):
+        return [_canon(v) for v in obj]
+    if isinstance(obj, dict):
+        out = {}
+        for key, value in obj.items():
+            if key == "arguments" and isinstance(value, str):
+                try:
+                    out[key] = json.dumps(_canon(json.loads(value)))
+                    continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            out[key] = _canon(value)
+        return out
+    return obj
+
+
 async def _post_tool_call(sid: str, name: str, arguments: dict) -> dict:
+    arguments = _canon(arguments)
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{ENV_API_URL}/sessions/{sid}/tools/{name}",

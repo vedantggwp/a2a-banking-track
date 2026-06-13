@@ -1,68 +1,43 @@
-# A2A Hackathon Template
+# Rho-Bank A2A — Two Interoperable Customer-Service Agents
 
 [![A2A Protocol](https://img.shields.io/badge/A2A-Protocol-blue)](https://a2a-protocol.org) [![Discord](https://img.shields.io/discord/1391916121589944320?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/674NGXpAjU)
 
-A working two-agent starter for the A2A Hackathon track. You build:
+Two interoperable [A2A](https://a2a-protocol.org) agents for the **Rho-Bank
+customer-service track**, scored on Sierra's [tau2-bench](https://github.com/sierra-research/tau2-bench):
 
-- **personal-agent** (`:9001`) — the user's personal assistant. Our simulated
-  user talks to it over A2A. It holds the *user-side* environment tools and
-  can contact the bank's customer service on the user's behalf.
-- **cs-agent** (`:9002`) — the bank's customer service agent. It holds the
-  *bank-side* environment tools and answers policy questions by searching the
-  public knowledge base (Redis RAG).
+- **personal-agent** (`:9001`) — the user's personal assistant. The simulated
+  user talks to it over A2A. It holds the *user-side* environment tools (apply
+  for a card, deposit, refer a friend, …) and contacts the bank on the user's
+  behalf.
+- **cs-agent** (`:9002`) — the bank's customer-service agent. It holds the
+  *bank-side* environment tools and answers every policy question by searching
+  a **~698-document policy knowledge base** with **Redis-backed RAG**.
 
-Fork it, make it smarter, submit your repo at
-[hackathon.a2anet.com](https://hackathon.a2anet.com).
+Both agents run on **`gemini-3.5-flash`** (KB vector search uses
+`gemini-embedding-001`). Scoring is **binary per task on the final database
+state**: the run earns reward 1 only when the exact write tool-calls land the
+DB in the golden state — reads don't score. The two agents are graded in three
+pairings, weighted **50 / 25 / 25** (your pair together, then each agent paired
+with a held-out opponent), so clean A2A interop is worth as much as task skill.
 
-## Rules
+---
 
-- Both agents must run on **`gemini-3.5-flash`** (the template default).
-  Experiment with whatever you like, but marked runs must use
-  gemini-3.5-flash — we manually verify the winning teams' code and
-  transcripts, and any other chat model disqualifies the submission.
-  (KB vector search uses `gemini-embedding-001`.)
-- Auth is **Vertex AI via an API key** created in your GCP project (Vertex AI
-  Agent Platform → API keys), so usage runs on your Google Cloud credits.
-  Set it in `.env`; you'll also submit it with your repo so marking runs can
-  use it.
-- Your submission is a **public GitHub repo** that keeps to "What you can't
-  change" below. Everything else is fair game.
+## How it works
 
-## What you can change
+```text
+        simulated user ──A2A──▶ PERSONAL agent (:9001)
+                                  │  user-side env tools (apply_for_card, deposit, refer…)
+                                  │
+                                  └─ ask_customer_service ──A2A──▶ CS agent (:9002)
+                                  (same contextId threaded)         │  bank-side env tools
+                                                                    │
+                                                                    └─ kb_search ──▶ Redis
+                                                                       (hybrid BM25 + vector
+                                                                        RAG over ~698 docs)
+        final DB state  ──compared to golden──▶  reward ∈ {0, 1}
+```
 
-Prompts, tool descriptions, the RAG pipeline (`ingest.py`, document layout,
-index schema, your own Redis image/modules, or an index pre-baked into the
-image so startup is instant), conversation flow between your two agents,
-extra internal tools — the knowledge base in `kb/` is public, and
-preprocessing it cleverly is encouraged. You can also go further:
-
-### Use another agent framework entirely
-
-Anything A2A-compatible works, in any language — keep the compose shape
-below and the inside of each container is yours. The wire contract a
-replacement must satisfy:
-
-- Serve A2A over **JSON-RPC**: an agent card at the service root,
-  `message/send` with text parts. Our clients call you with streaming off
-  and read your reply text from a returned `Message`, or from a returned
-  `Task`'s artifacts plus its final `status.message` (all text parts,
-  joined). Intermediate status updates are never read.
-- Every incoming message carries a **`contextId`** — your session key.
-  Reuse it on every env tool call (it's the session id in the URL path)
-  and, personal agent only, as the `contextId` on every A2A message to
-  `CS_AGENT_URL`.
-- Fetch your tools from the env API (see "Environment tools"); don't
-  hardcode them.
-
-`a2a-hack smoke` (see "Dev loop") is the conformance check: it fails loudly
-on contextId mistakes.
-
-### Write a custom A2A Agent Executor
-
-The template serves both agents with ADK's built-in A2A executor
-(`to_a2a(root_agent)`). You can replace it to control exactly what goes on
-the wire. Here's one full personal-agent turn — the internal session vs.
-what the caller sees over A2A:
+One personal-agent turn, internal session vs. what the caller sees over A2A:
 
 ```text
 A2A in (message/send, contextId=ctx42):
@@ -70,124 +45,169 @@ A2A in (message/send, contextId=ctx42):
 
 Inside the agent's session (invisible to the caller):
   tool call    ask_customer_service("How do I submit a referral?")
-  tool result  "Verify the customer first; then it's submitted from the
-                customer's side with their submit_referral tool."
+  tool result  "Verify the customer; then submit it from the customer's side
+                with their submit_referral tool."
   tool call    submit_referral({"account_type": "Blue Account", ...})
                → POST {ENV_API_URL}/sessions/ctx42/tools/submit_referral
   tool result  {"content": "Referral submitted.", "error": false}
   final text   "Done — I've submitted the referral for Dana."
 
 A2A out (what the caller receives):
-  Task
-    status.state: "completed"
-    artifacts: [{ parts: [{ text: "Done — I've submitted the referral
-                            for Dana." }] }]
+  Task → status.state "completed", artifact text:
+    "Done — I've submitted the referral for Dana."
 ```
 
-ADK's executor returns the final model message as a Task **artifact**; tool
-calls and intermediate updates never leave the agent. Our clients read
-artifact text plus the final `status.message` text — either carries your
-reply, and responding with a plain `Message` works too. Whatever executor
-you use, only that final text reaches the other side.
+Only that final text crosses the wire — tool calls and intermediate updates
+stay inside the agent.
 
-## What you can't change
+---
 
-1. **The compose shape.** A `docker-compose.yml` with services
-   `personal-agent` (`:9001`), `cs-agent` (`:9002`), and `redis`. Both
-   agents honor the injected env vars `ENV_API_URL`, `ENV_API_TOKEN`, and
-   the Google model credentials; the personal agent honors `CS_AGENT_URL`
-   and always contacts customer service through it.
-2. **contextId discipline.** Reuse the incoming A2A `contextId` on every
-   env tool call and, for the personal agent, on every message to the CS
-   agent. (ADK keys its session on the contextId, so the template gets this
-   for free — `ctx.session.id` *is* the contextId.)
-3. **Statelessness across contextIds.** Simulations run concurrently; each
-   conversation must be fully isolated by its contextId.
-4. **The model** (see Rules), and the environment itself — the tasks, env
-   tools, and simulated user belong to the harness.
-5. **The harness timeouts.** Each agent turn must finish within 5 minutes and
-   each whole task within 10 minutes, or the run is scored 0. These limits are
-   fixed by the harness. You may change the local run `--concurrency`, but
-   raising it on a single Vertex key causes 429 rate-limit errors that slow
-   your agents into these timeouts, so it isn't recommended.
+## Engineering approach
 
-## Environment tools
+The winning chain for a task is: **retrieve the right policy doc → verify
+identity → unlock the discoverable bank tool → call it with byte-exact args.**
+The two failure modes that cost reward are (a) answering from the model's memory
+instead of the KB, and (b) last-mile argument errors on the final write. Every
+design choice below targets one of those.
 
-Each agent gets its tools from the harness env API (not hardcoded):
+### Retrieval — hybrid BM25 + vector, RRF-fused
+`cs_agent/rag_tools.py` runs **BM25 and `gemini-embedding-001` vector search in
+parallel** and fuses them with **Reciprocal Rank Fusion** (`RRF_K = 60`). Lexical
+recall catches exact tool names and account classes; vector recall catches
+paraphrased policy intent; RRF gives a single ranking that beats either alone.
 
-- `GET {ENV_API_URL}/sessions/{contextId}/tools` — OpenAI-style schemas for
-  your scope (`Authorization: Bearer {ENV_API_TOKEN}`). The personal agent
-  sees the user's tools; the CS agent sees the bank's tools.
-- `POST {ENV_API_URL}/sessions/{contextId}/tools/{name}` with
-  `{"arguments": {...}}` — execute a tool; returns
-  `{"content": ..., "error": ...}`.
+### Forced KB grounding (hard precondition, not advice)
+`kb_search` is a **gate, not a suggestion**. The CS agent's policy prompt
+(`cs_agent/agent.py`) makes it invalid to recommend a product, state any
+rate/fee/eligibility rule, or make any DB write without having called
+`kb_search` that turn and grounded every value in a retrieved doc — and it must
+**never state a banking fact from memory**. This kills hallucinated policies and
+surfaces the precise rules (net-correction aggregation, Reg-E fields, "best free
+tier") that the final write depends on.
 
-This template's `EnvApiToolset` fetches these live each turn, so tools that
-get granted mid-conversation appear automatically.
+### Integer canonicalization of tool-call args
+The grader hashes the exact JSON of each write, so `1500.0 ≠ 1500`. Both agents'
+toolsets (`personal_agent/env_toolset.py`, `cs_agent/env_toolset.py`) coerce
+whole-number floats to ints (`int(x) if x.is_integer() else x`) **before the call
+leaves the agent**, so writes hash-match the golden DB state instead of
+near-missing on a serialization artifact.
 
-## Dev loop
+### Pre-baked embedding cache — instant startup
+`cs_agent/ingest.py` loads a prebaked vector cache (`kb/embeddings.json`,
+1162 vectors) at startup instead of live-embedding the corpus. Ingest is a
+cache hit — no API calls, no quota burn, no startup embedding wait — which keeps
+the marker's cold start comfortably inside the 10-minute task budget.
 
-You run simulations locally with the harness CLI from
-[a2anet/a2a-hackathon](https://github.com/a2anet/a2a-hackathon) — clone it
-next to this repo.
+### Graceful BM25 fallback when embeddings are unavailable
+Query embedding runs under a hard wall-clock cap (`_embed_bounded`,
+`KB_EMBED_TIMEOUT_S=6`). If the embedding endpoint is missing or throttled, the
+vector leg raises, is caught, and search **degrades to BM25** rather than hanging
+the task — so retrieval stays alive (and within turn timeouts) even on a
+rate-limited key, including on the held-out marked runs.
+
+### Smarter ingest
+`ingest.py` extracts internal tool names (`\w+_\d{4}`) and account classes into
+a dedicated searchable field, chunks long docs by heading, and builds
+per-account-class **digest docs** — so the doc naming the right tool ranks for
+the query that needs it.
+
+### Strict A2A contextId discipline
+The incoming A2A `contextId` is the session key. It is threaded onto **every**
+environment-tool call and onto **every** personal→CS A2A message, and each
+conversation is fully isolated by its contextId. This is what earns the 50/25/25
+interop credit — the two agents compose cleanly with held-out opponents, and the
+harness's `smoke` conformance check fails loudly on any contextId mistake.
+
+---
+
+## Conformance
+
+- **Model:** both agents run on `gemini-3.5-flash`; KB vector search uses
+  `gemini-embedding-001`. No other chat model is used.
+- **Compose shape (frozen):** services `personal-agent` (`:9001`),
+  `cs-agent` (`:9002`), and `redis`, honoring the injected `ENV_API_URL`,
+  `ENV_API_TOKEN`, `CS_AGENT_URL`, and Google model credentials.
+- **contextId threading:** reused on every env-tool call and every personal→CS
+  message; conversations are stateless across contextIds (simulations run
+  concurrently and must stay isolated).
+- **Tools fetched live** from the env API each turn — never hardcoded.
+- **Plain text only** crosses the wire; only the final message text reaches the
+  other agent.
+
+---
+
+## Run it
+
+Requires Docker (with `host.docker.internal` reachable — on Linux the compose
+file maps it via `host-gateway`) and a Vertex AI API key.
 
 ```bash
-# 1. Configure (model credentials etc.)
+# 1. Configure model credentials
 cp .env.example .env
+#    set GOOGLE_API_KEY to your Vertex AI key in .env
 
-# 2. Run your agents
+# 2. Build and start both agents + Redis
 docker compose up --build
+```
 
-# 3. In the harness repo, smoke-test one task (export the same
-#    GOOGLE_API_KEY first — our simulated user runs on it too)
+This starts `personal-agent` on `:9001`, `cs-agent` on `:9002`, and `redis`.
+The CS agent ingests the KB into a Redis full-text + vector index at startup;
+with the prebaked `kb/embeddings.json` cache this is a cache hit and starts
+fast.
+
+Run simulations with the harness CLI from
+[a2anet/a2a-hackathon](https://github.com/a2anet/a2a-hackathon) (clone it next
+to this repo, and export the same `GOOGLE_API_KEY` — the simulated user runs on
+it too):
+
+```bash
+# Smoke-test one task (prints both conversation legs, every env tool call,
+# and the reward; fails loudly on contextId mistakes)
 uv run a2a-hack smoke \
     --personal-url http://localhost:9001 --cs-url http://localhost:9002
 
-# 4. Run the train split and browse results
+# Run the train split and browse results
 uv run a2a-hack run --personal-url http://localhost:9001 \
     --cs-url http://localhost:9002 --tasks train --save-to results/dev --auto-resume
 uv run tau2 view results/dev
-
-# 5. Iterate on prompts/RAG/flow, then submit (see "Submission")
 ```
 
-`smoke` prints both conversation legs (user↔personal and personal↔CS), every
-environment tool call, and the reward — if your contextId handling is wrong
-it will tell you loudly.
+Iterate against the `train` split; run `--tasks test` sparingly, as a
+generalisation check. Keep `--concurrency` low: on a single Vertex key, raising
+it causes 429s that push turns past the 5-min limit and score the task 0.
 
-Iterate against the `train` split. Run `--tasks test` sparingly, as a
-generalisation check: if you tune to it, you won't know whether your
-improvements actually generalise.
+> **Secrets:** the Vertex API key lives only in `.env` (gitignored) and is
+> submitted separately via the hackathon form — never commit it. Note that
+> harness result files (`results/`) can serialize the key in plaintext; keep
+> `results/` out of version control.
 
-## What's where
+---
+
+## Layout
 
 ```
-personal_agent/  agent.py (prompt), env_toolset.py, cs_client_tool.py, main.py
-cs_agent/        agent.py (policy prompt), env_toolset.py, rag_tools.py, ingest.py, main.py
-kb/              the public knowledge base: documents/ (698 docs) + policy.md
+personal_agent/  agent.py (prompt), env_toolset.py (+ int canonicalization),
+                 cs_client_tool.py, main.py
+cs_agent/        agent.py (policy prompt, forced KB grounding),
+                 rag_tools.py (hybrid BM25 + vector + RRF, bounded embed),
+                 env_toolset.py (+ int canonicalization), ingest.py, main.py
+kb/              public knowledge base: documents/ (698 docs) + policy.md,
+                 embeddings.json (prebaked vector cache)
+specs/           rag-rebuild.md (retrieval design spec)
 ```
 
-The CS agent's `ingest.py` builds a Redis full-text + vector index at startup
-(vector search needs model credentials; BM25 works without).
+---
 
 ## Submission
 
 Submit your public repo URL and your Vertex API key at
-[hackathon.a2anet.com](https://hackathon.a2anet.com). Submit as often as you
-like — each submission pins the current commit, and your latest one is what
-gets marked.
-
-Every submission gets a feedback run: scores for **three tasks** (the
-`feedback` split), each in three pairings — your pair together, your
-personal agent with our held-out CS agent, and our held-out personal agent
-with your CS agent — with full transcripts on the site.
-
-Final marking uses the same three pairings, weighted 50% (your pair) /
-25% / 25% (each held-out pairing). Keep to the contract above and both of
-your agents will compose cleanly with ours.
+[hackathon.a2anet.com](https://hackathon.a2anet.com). Each submission pins the
+current commit; the latest is what gets marked. Every submission gets a feedback
+run (three tasks × three pairings, with full transcripts), and final marking
+uses the same three pairings weighted 50 / 25 / 25.
 
 ## 🤖 Join A2A Net
 
-[A2A Net](https://a2anet.com) is an open-source community for the [A2A protocol](https://a2a-protocol.org/latest/) and platform to build AI agents for [Slack](https://slack.com/intl/en-gb/), [Microsoft 365 Copilot](https://m365.cloud.microsoft/), [Microsoft Teams](https://www.microsoft.com/microsoft-teams/), and [Gemini Enterprise](https://cloud.google.com/gemini-enterprise).
+[A2A Net](https://a2anet.com) is an open-source community for the [A2A protocol](https://a2a-protocol.org/latest/) and a platform to build AI agents for [Slack](https://slack.com/intl/en-gb/), [Microsoft 365 Copilot](https://m365.cloud.microsoft/), [Microsoft Teams](https://www.microsoft.com/microsoft-teams/), and [Gemini Enterprise](https://cloud.google.com/gemini-enterprise).
 
-[Join the Discord](https://discord.gg/674NGXpAjU) to share your project, ask questions, stay up-to-date with the latest news, be the first to hear about open-source releases, tutorials, and more!
+[Join the Discord](https://discord.gg/674NGXpAjU) to share your project, ask questions, and stay up to date.

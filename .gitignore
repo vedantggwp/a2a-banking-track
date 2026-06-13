@@ -1,5 +1,13 @@
 .env
 __pycache__/
 
-# Generated embedding cache (regenerate with cs_agent/precompute_embeddings.py)
-kb/embeddings.json
+
+# Eval output — contains the Vertex key in plaintext (info.user_info.llm_args.api_key).
+# Never publish; deliver the key via the submission form only.
+results/
+
+# Local parallel-fork dev override — must NOT ship (breaks 9001/9002 + :8090 harness)
+docker-compose.override.yml
+
+# Logs
+*.log

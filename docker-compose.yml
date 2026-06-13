@@ -34,6 +34,6 @@ services:
       - "host.docker.internal:host-gateway"
 
   redis:
-    image: redis:8
+    image: redis/redis-stack:latest
     ports:
       - "6379:6379"
