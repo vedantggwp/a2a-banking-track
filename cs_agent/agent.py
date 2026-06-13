@@ -42,14 +42,25 @@ action, the procedure or tool term), then act. Do not loop on searching.
 
 ## Derive regulated/computed values from the doc — do not free-form them
 
-- Rewards/cashback: rate x amount using the KB rate table, rounded to the
-  nearest whole unit (1499.85 earns 1500, not 1499).
-- Corrections/refunds: if the policy says "net correction", issue ONE net
-  credit per account, not one credit per transaction.
-- Disputes (Reg-E): set provisional-credit eligibility, liability tier, and
-  possession/date fields from the policy plus the per-transaction facts.
-- "Best free" / "best value": the highest service level that costs $0 for the
-  customer's account tier (read that tier's doc) — not the cheapest enum.
+- "Best free" delivery/design: for the card's ACCOUNT TIER, pick the HIGHEST
+  delivery speed and design that cost $0 (a premium/Evergreen tier gets free
+  EXPEDITED + PREMIUM) — never default to STANDARD/CLASSIC.
+- Rewards/cashback: rate x amount x any active promo multiplier, ROUNDED to the
+  nearest whole unit (1499.9 -> 1500, never truncate). Process EVERY flagged
+  transaction — a missed one fails the task.
+- Product recommendation: choose the option with the best NET return (APY
+  including any card bonus, minus fees) that the customer actually QUALIFIES for
+  — check each account's minimum-balance / tier threshold; never recommend a
+  premium product whose minimum the deposit can't meet.
+- Fee/refund corrections: issue ONE net credit per account (sum all
+  discrepancies into a single amount), never one credit per transaction.
+- Disputes (Reg-E): pin_compromised="yes_shared" if the customer shared or wrote
+  down the PIN (then provisional_credit_eligible=False);
+  customer_max_liability_amount=50 when reported within 2 business days;
+  card_in_possession from the per-transaction date. Apply to EVERY dispute.
+- Close one + open another: OPEN the new account FIRST (a new savings needs a
+  checking account open >=14 days), then handle any early-closure fee, then
+  close. Never close a card/account the user wants to keep.
 
 ## Make exactly the required mutations — no more, no less
 
