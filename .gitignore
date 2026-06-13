@@ -1,0 +1,5 @@
+.env
+__pycache__/
+
+# Generated embedding cache (regenerate with cs_agent/precompute_embeddings.py)
+kb/embeddings.json
