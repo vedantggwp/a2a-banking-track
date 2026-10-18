@@ -71,19 +71,21 @@ instead of the KB, and (b) last-mile argument errors on the final write. Every
 design choice below targets one of those.
 
 ### Retrieval — hybrid BM25 + vector, RRF-fused
-`cs_agent/rag_tools.py` runs **BM25 and `gemini-embedding-001` vector search in
-parallel** and fuses them with **Reciprocal Rank Fusion** (`RRF_K = 60`). Lexical
+`cs_agent/rag_tools.py` runs **BM25 and `gemini-embedding-001` vector search
+sequentially** and fuses them with **Reciprocal Rank Fusion** (`RRF_K = 60`). Lexical
 recall catches exact tool names and account classes; vector recall catches
-paraphrased policy intent; RRF gives a single ranking that beats either alone.
+paraphrased policy intent; RRF combines the two result lists into a single
+ranking. Whether it outperforms either retrieval method alone has not been
+established here.
 
-### Forced KB grounding (hard precondition, not advice)
-`kb_search` is a **gate, not a suggestion**. The CS agent's policy prompt
-(`cs_agent/agent.py`) makes it invalid to recommend a product, state any
-rate/fee/eligibility rule, or make any DB write without having called
-`kb_search` that turn and grounded every value in a retrieved doc — and it must
-**never state a banking fact from memory**. This kills hallucinated policies and
-surfaces the precise rules (net-correction aggregation, Reg-E fields, "best free
-tier") that the final write depends on.
+### KB grounding instructions
+The CS agent's policy prompt (`cs_agent/agent.py`) instructs it to call
+`kb_search` that turn and ground every value in a retrieved document before
+recommending a product, stating a rate/fee/eligibility rule, or making a DB
+write. It also instructs the agent not to state banking facts from memory.
+These are prompt instructions, not enforced runtime grounding gates. They aim
+to surface the relevant rules (net-correction aggregation, Reg-E fields,
+"best free tier"); they do not guarantee compliance or eliminate hallucinations.
 
 ### Integer canonicalization of tool-call args
 The grader hashes the exact JSON of each write, so `1500.0 ≠ 1500`. Both agents'
